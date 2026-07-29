@@ -430,7 +430,13 @@ do
 	end)
 end
 
--- ===== TARGET FINDING =====
+-- ===== TARGET FINDING (performance-optimized) =====
+local CollectionService = game:GetService("CollectionService")
+
+-- If your NPCs are tagged with CollectionService (e.g. CollectionService:AddTag(npcModel, "Enemy")),
+-- they'll automatically be picked up here too. Change the tag name if yours differs.
+local NPC_TAG = "Enemy"
+
 local function isValidTarget(model)
 	if not model or model == player.Character then
 		return false
@@ -451,6 +457,24 @@ local function isValidTarget(model)
 	return true
 end
 
+-- Builds a small candidate list instead of scanning the whole Workspace tree.
+-- Sources: all other Players' characters + anything tagged NPC_TAG.
+local function getCandidateModels()
+	local candidates = {}
+
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if otherPlayer ~= player and otherPlayer.Character then
+			table.insert(candidates, otherPlayer.Character)
+		end
+	end
+
+	for _, model in ipairs(CollectionService:GetTagged(NPC_TAG)) do
+		table.insert(candidates, model)
+	end
+
+	return candidates
+end
+
 -- Scores candidates by a mix of angle-from-center and distance so a close,
 -- slightly-off-center target can beat a far, dead-center one.
 local function findBestTarget()
@@ -465,8 +489,8 @@ local function findBestTarget()
 	local bestTarget = nil
 	local bestScore = math.huge
 
-	for _, model in ipairs(Workspace:GetDescendants()) do
-		if model:IsA("Model") and isValidTarget(model) then
+	for _, model in ipairs(getCandidateModels()) do
+		if isValidTarget(model) then
 			local targetRoot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
 			if targetRoot then
 				local toTarget = targetRoot.Position - camPos
@@ -477,7 +501,6 @@ local function findBestTarget()
 					local angle = math.acos(math.clamp(camLookVector:Dot(direction), -1, 1))
 
 					if angle < maxAngle then
-						-- normalize both factors 0-1 and combine (angle weighted higher)
 						local angleScore = angle / maxAngle
 						local distScore = distance / settings.Radius
 						local score = (angleScore * 0.7) + (distScore * 0.3)
@@ -495,8 +518,12 @@ local function findBestTarget()
 	return bestTarget
 end
 
--- ===== CAMERA NUDGE (per-frame) =====
-RunService.RenderStepped:Connect(function()
+-- ===== CAMERA NUDGE (per-frame, target search throttled) =====
+local SEARCH_INTERVAL = 0.1 -- seconds between target re-searches (10x/sec is plenty)
+local timeSinceSearch = math.huge
+local cachedTarget = nil
+
+RunService.RenderStepped:Connect(function(dt)
 	if aimHelperEnabled then
 		updateFOVCircle()
 	end
@@ -504,8 +531,14 @@ RunService.RenderStepped:Connect(function()
 	if not aimHelperEnabled then return end
 	if onlyWhileAiming and not isAimingHeld then return end
 
-	local target = findBestTarget()
-	if not target then
+	timeSinceSearch += dt
+	if timeSinceSearch >= SEARCH_INTERVAL then
+		timeSinceSearch = 0
+		cachedTarget = findBestTarget()
+	end
+
+	local target = cachedTarget
+	if not target or not target.Parent then
 		currentSmoothLook = nil
 		return
 	end
