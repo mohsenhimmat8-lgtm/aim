@@ -518,10 +518,38 @@ local function findBestTarget()
 	return bestTarget
 end
 
--- ===== CAMERA NUDGE (per-frame, target search throttled) =====
-local SEARCH_INTERVAL = 0.1 -- seconds between target re-searches (10x/sec is plenty)
+-- ===== CAMERA NUDGE (per-frame, target search throttled but responsive) =====
+local SEARCH_INTERVAL = 0.05 -- seconds between full re-searches while locked on (20x/sec)
 local timeSinceSearch = math.huge
 local cachedTarget = nil
+
+-- Checks the currently locked target is still alive, present, and still
+-- inside the assist radius/cone. Cheap — just re-tests one candidate.
+local function isCachedTargetStillValid(target, camPos, camLookVector)
+	if not target or not target.Parent then return false end
+
+	local model = target.Parent
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return false end
+
+	if teamCheckEnabled then
+		local targetPlayer = Players:GetPlayerFromCharacter(model)
+		if targetPlayer and player.Team and targetPlayer.Team == player.Team then
+			return false
+		end
+	end
+
+	local toTarget = target.Position - camPos
+	local distance = toTarget.Magnitude
+	if distance <= 0 or distance > settings.Radius then return false end
+
+	local angle = math.acos(math.clamp(camLookVector:Dot(toTarget.Unit), -1, 1))
+	-- give a little extra slack (1.5x) so it doesn't drop the lock the instant
+	-- the target grazes the cone edge; findBestTarget will re-lock properly anyway
+	if angle > math.rad(settings.ConeAngle) * 1.5 then return false end
+
+	return true
+end
 
 RunService.RenderStepped:Connect(function(dt)
 	if aimHelperEnabled then
@@ -531,10 +559,25 @@ RunService.RenderStepped:Connect(function(dt)
 	if not aimHelperEnabled then return end
 	if onlyWhileAiming and not isAimingHeld then return end
 
-	timeSinceSearch += dt
-	if timeSinceSearch >= SEARCH_INTERVAL then
-		timeSinceSearch = 0
+	local camCFrame = camera.CFrame
+	local camPos = camCFrame.Position
+	local camLookVector = camCFrame.LookVector
+
+	-- If we don't currently have a target, search every frame until we get one
+	-- (cheap now that the candidate list is small). Once locked, only
+	-- re-search periodically, but keep validating the lock every frame.
+	if not cachedTarget or not isCachedTargetStillValid(cachedTarget, camPos, camLookVector) then
 		cachedTarget = findBestTarget()
+		timeSinceSearch = 0
+	else
+		timeSinceSearch += dt
+		if timeSinceSearch >= SEARCH_INTERVAL then
+			timeSinceSearch = 0
+			local newBest = findBestTarget()
+			if newBest then
+				cachedTarget = newBest
+			end
+		end
 	end
 
 	local target = cachedTarget
@@ -543,8 +586,6 @@ RunService.RenderStepped:Connect(function(dt)
 		return
 	end
 
-	local camCFrame = camera.CFrame
-	local camPos = camCFrame.Position
 	local toTarget = (target.Position - camPos).Unit
 
 	local currentLook = currentSmoothLook or camCFrame.LookVector
