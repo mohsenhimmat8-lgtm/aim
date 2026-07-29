@@ -1,0 +1,358 @@
+--[[
+    AimAssistGUI.lua
+    Place this as a LocalScript inside StarterPlayerScripts.
+
+    What it does:
+    - Spawns a GUI with:
+        - Aim Helper toggle (also bound to F key)
+        - Team Check toggle (when ON, never assists onto teammates)
+        - Settings panel with sliders: Radius, Cone Angle, Strength
+    - When Aim Helper is ON, gently nudges your camera toward the
+      nearest valid target within a cone in front of you (soft aim
+      assist, similar to console shooter aim assist)
+
+    You WILL likely need to adjust:
+    - How "valid targets" are identified (currently: any Humanoid
+      in workspace, excluding your own character; teammates are
+      skipped only if Team Check is enabled)
+--]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+
+-- ===== CONFIG (defaults; adjustable live via sliders) =====
+local settings = {
+	Radius = 60,        -- studs, how far the assist can "see"
+	ConeAngle = 8,       -- degrees, half-angle of the targeting cone
+	Strength = 0.12,     -- 0-1, how strongly camera nudges per frame
+}
+
+local SLIDER_RANGES = {
+	Radius = {min = 10, max = 150},
+	ConeAngle = {min = 1, max = 30},
+	Strength = {min = 0.01, max = 0.5},
+}
+
+local TOGGLE_KEY = Enum.KeyCode.F
+
+-- ===== STATE =====
+local aimHelperEnabled = false
+local teamCheckEnabled = true
+
+-- ===== GUI ROOT =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AimHelperGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Name = "AimHelperFrame"
+frame.Size = UDim2.new(0, 220, 0, 60)
+frame.Position = UDim2.new(0, 20, 0, 20)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+frame.BackgroundTransparency = 0.2
+frame.BorderSizePixel = 0
+frame.ClipsDescendants = false
+frame.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = frame
+
+local label = Instance.new("TextLabel")
+label.Name = "Label"
+label.Size = UDim2.new(1, -36, 0, 20)
+label.Position = UDim2.new(0, 10, 0, 4)
+label.BackgroundTransparency = 1
+label.Text = "Aim Helper (F)"
+label.TextColor3 = Color3.fromRGB(255, 255, 255)
+label.Font = Enum.Font.GothamBold
+label.TextSize = 14
+label.TextXAlignment = Enum.TextXAlignment.Left
+label.Parent = frame
+
+-- gear button to expand settings
+local gearButton = Instance.new("TextButton")
+gearButton.Name = "GearButton"
+gearButton.Size = UDim2.new(0, 24, 0, 20)
+gearButton.Position = UDim2.new(1, -30, 0, 4)
+gearButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+gearButton.Text = "⚙"
+gearButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+gearButton.Font = Enum.Font.GothamBold
+gearButton.TextSize = 14
+gearButton.Parent = frame
+
+local gearCorner = Instance.new("UICorner")
+gearCorner.CornerRadius = UDim.new(0, 6)
+gearCorner.Parent = gearButton
+
+-- row for the two toggle buttons
+local toggleButton = Instance.new("TextButton")
+toggleButton.Name = "ToggleButton"
+toggleButton.Size = UDim2.new(0.5, -15, 0, 28)
+toggleButton.Position = UDim2.new(0, 10, 0, 26)
+toggleButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+toggleButton.Text = "AIM: OFF"
+toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleButton.Font = Enum.Font.GothamBold
+toggleButton.TextSize = 13
+toggleButton.Parent = frame
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 6)
+btnCorner.Parent = toggleButton
+
+local teamCheckButton = Instance.new("TextButton")
+teamCheckButton.Name = "TeamCheckButton"
+teamCheckButton.Size = UDim2.new(0.5, -15, 0, 28)
+teamCheckButton.Position = UDim2.new(0.5, 5, 0, 26)
+teamCheckButton.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
+teamCheckButton.Text = "TEAM CHECK: ON"
+teamCheckButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+teamCheckButton.Font = Enum.Font.GothamBold
+teamCheckButton.TextSize = 12
+teamCheckButton.Parent = frame
+
+local tcCorner = Instance.new("UICorner")
+tcCorner.CornerRadius = UDim.new(0, 6)
+tcCorner.Parent = teamCheckButton
+
+-- ===== SETTINGS PANEL (hidden by default) =====
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Name = "SettingsPanel"
+settingsPanel.Size = UDim2.new(1, 0, 0, 120)
+settingsPanel.Position = UDim2.new(0, 0, 1, 6)
+settingsPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+settingsPanel.BackgroundTransparency = 0.2
+settingsPanel.Visible = false
+settingsPanel.Parent = frame
+
+local spCorner = Instance.new("UICorner")
+spCorner.CornerRadius = UDim.new(0, 8)
+spCorner.Parent = settingsPanel
+
+local function createSlider(name, yPos, key)
+	local range = SLIDER_RANGES[key]
+
+	local sliderLabel = Instance.new("TextLabel")
+	sliderLabel.Size = UDim2.new(1, -20, 0, 14)
+	sliderLabel.Position = UDim2.new(0, 10, 0, yPos)
+	sliderLabel.BackgroundTransparency = 1
+	sliderLabel.Text = name .. ": " .. tostring(settings[key])
+	sliderLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	sliderLabel.Font = Enum.Font.Gotham
+	sliderLabel.TextSize = 12
+	sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+	sliderLabel.Parent = settingsPanel
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -20, 0, 6)
+	track.Position = UDim2.new(0, 10, 0, yPos + 18)
+	track.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	track.Parent = settingsPanel
+
+	local trackCorner = Instance.new("UICorner")
+	trackCorner.CornerRadius = UDim.new(1, 0)
+	trackCorner.Parent = track
+
+	local fraction = (settings[key] - range.min) / (range.max - range.min)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(fraction, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
+	fill.Parent = track
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	local knob = Instance.new("TextButton")
+	knob.Size = UDim2.new(0, 14, 0, 14)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.new(fraction, 0, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.Text = ""
+	knob.Parent = track
+
+	local knobCorner = Instance.new("UICorner")
+	knobCorner.CornerRadius = UDim.new(1, 0)
+	knobCorner.Parent = knob
+
+	local dragging = false
+
+	local function updateFromX(inputX)
+		local trackAbsPos = track.AbsolutePosition.X
+		local trackAbsSize = track.AbsoluteSize.X
+		local relative = math.clamp((inputX - trackAbsPos) / trackAbsSize, 0, 1)
+
+		local value = range.min + (range.max - range.min) * relative
+		if key == "Strength" then
+			value = math.floor(value * 100) / 100
+		else
+			value = math.floor(value)
+		end
+
+		settings[key] = value
+		fill.Size = UDim2.new(relative, 0, 1, 0)
+		knob.Position = UDim2.new(relative, 0, 0.5, 0)
+		sliderLabel.Text = name .. ": " .. tostring(value)
+	end
+
+	knob.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateFromX(input.Position.X)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			updateFromX(input.Position.X)
+		end
+	end)
+end
+
+createSlider("Radius (studs)", 4, "Radius")
+createSlider("Cone Angle (deg)", 42, "ConeAngle")
+createSlider("Strength", 80, "Strength")
+
+-- ===== TOGGLE LOGIC =====
+local function updateToggleVisual()
+	if aimHelperEnabled then
+		toggleButton.Text = "AIM: ON"
+		toggleButton.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
+	else
+		toggleButton.Text = "AIM: OFF"
+		toggleButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+	end
+end
+
+local function updateTeamCheckVisual()
+	if teamCheckEnabled then
+		teamCheckButton.Text = "TEAM CHECK: ON"
+		teamCheckButton.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
+	else
+		teamCheckButton.Text = "TEAM CHECK: OFF"
+		teamCheckButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+	end
+end
+
+toggleButton.MouseButton1Click:Connect(function()
+	aimHelperEnabled = not aimHelperEnabled
+	updateToggleVisual()
+end)
+
+teamCheckButton.MouseButton1Click:Connect(function()
+	teamCheckEnabled = not teamCheckEnabled
+	updateTeamCheckVisual()
+end)
+
+gearButton.MouseButton1Click:Connect(function()
+	settingsPanel.Visible = not settingsPanel.Visible
+	if settingsPanel.Visible then
+		frame.Size = UDim2.new(0, 220, 0, 60 + 6 + 120)
+	else
+		frame.Size = UDim2.new(0, 220, 0, 60)
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if input.KeyCode == TOGGLE_KEY then
+		aimHelperEnabled = not aimHelperEnabled
+		updateToggleVisual()
+	end
+end)
+
+-- ===== TARGET FINDING =====
+local function isValidTarget(model)
+	if not model or model == player.Character then
+		return false
+	end
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+
+	-- Team Check: skip teammates only when enabled
+	if teamCheckEnabled then
+		local targetPlayer = Players:GetPlayerFromCharacter(model)
+		if targetPlayer and player.Team and targetPlayer.Team == player.Team then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function findBestTarget()
+	local character = player.Character
+	if not character then return nil end
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+
+	local camCFrame = camera.CFrame
+	local camPos = camCFrame.Position
+	local camLookVector = camCFrame.LookVector
+
+	local bestTarget = nil
+	local bestAngle = math.rad(settings.ConeAngle)
+
+	for _, model in ipairs(Workspace:GetDescendants()) do
+		if model:IsA("Model") and isValidTarget(model) then
+			local targetRoot = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+			if targetRoot then
+				local toTarget = (targetRoot.Position - camPos)
+				local distance = toTarget.Magnitude
+
+				if distance <= settings.Radius and distance > 0 then
+					local direction = toTarget.Unit
+					local angle = math.acos(math.clamp(camLookVector:Dot(direction), -1, 1))
+
+					if angle < bestAngle then
+						bestAngle = angle
+						bestTarget = targetRoot
+					end
+				end
+			end
+		end
+	end
+
+	return bestTarget
+end
+
+-- ===== CAMERA NUDGE =====
+RunService.RenderStepped:Connect(function()
+	if not aimHelperEnabled then return end
+
+	local target = findBestTarget()
+	if not target then return end
+
+	local camCFrame = camera.CFrame
+	local camPos = camCFrame.Position
+	local toTarget = (target.Position - camPos).Unit
+
+	local currentLook = camCFrame.LookVector
+	local newLook = currentLook:Lerp(toTarget, settings.Strength)
+
+	camera.CFrame = CFrame.new(camPos, camPos + newLook)
+end)
