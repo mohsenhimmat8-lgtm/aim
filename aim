@@ -3,30 +3,50 @@
     Place this as a LocalScript inside StarterPlayerScripts.
 
     Features:
-    - Draggable, collapsible GUI window
+    - Sleek animated GUI: smooth tweened toggles, hover effects, drop shadow,
+      gradient accents, animated open/close for settings panel
     - Aim Helper toggle (F key or button)
     - Team Check toggle (skip teammates)
-    - "Only while aiming" toggle (only assist while RMB/right trigger held)
+    - "Only while aiming" toggle (only assist while RMB held)
     - Settings panel with sliders: Radius, Cone Angle, Strength, Smoothness
     - On-screen FOV circle showing the assist cone while enabled
-    - Smarter target picking: weighs both angle-from-crosshair AND distance,
-      so it doesn't lock onto a far target just because it's dead-center
+    - Smart target picking: weighs angle-from-crosshair AND distance
+    - Performance-optimized target search (only players/tagged NPCs, throttled)
 --]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
+
+-- ===== THEME =====
+local THEME = {
+	Background = Color3.fromRGB(16, 16, 20),
+	Panel = Color3.fromRGB(24, 24, 30),
+	Row = Color3.fromRGB(32, 32, 40),
+	RowHover = Color3.fromRGB(40, 40, 50),
+	Accent = Color3.fromRGB(96, 160, 255),
+	AccentAlt = Color3.fromRGB(150, 100, 255),
+	On = Color3.fromRGB(60, 200, 130),
+	Off = Color3.fromRGB(200, 70, 70),
+	Text = Color3.fromRGB(235, 235, 240),
+	SubText = Color3.fromRGB(150, 150, 160),
+}
+
+local TWEEN_FAST = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TWEEN_MED = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TWEEN_SPRING = TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
 -- ===== CONFIG (defaults; adjustable live via sliders) =====
 local settings = {
 	Radius = 60,
 	ConeAngle = 8,
 	Strength = 0.12,
-	Smoothness = 0.25, -- higher = smoother/slower camera easing
+	Smoothness = 0.25,
 }
 
 local SLIDER_RANGES = {
@@ -52,84 +72,134 @@ screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
+-- drop shadow (built-in Roblox shadow asset, tinted)
+local shadow = Instance.new("ImageLabel")
+shadow.Name = "Shadow"
+shadow.BackgroundTransparency = 1
+shadow.Image = "rbxassetid://6014261993"
+shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+shadow.ImageTransparency = 0.45
+shadow.ScaleType = Enum.ScaleType.Slice
+shadow.SliceCenter = Rect.new(49, 49, 450, 450)
+shadow.Size = UDim2.new(1, 40, 1, 40)
+shadow.Position = UDim2.new(0, -20, 0, -20)
+shadow.ZIndex = 0
+shadow.Parent = screenGui
+
 local frame = Instance.new("Frame")
 frame.Name = "AimHelperFrame"
-frame.Size = UDim2.new(0, 240, 0, 44)
+frame.Size = UDim2.new(0, 250, 0, 0)
 frame.Position = UDim2.new(0, 20, 0, 20)
-frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-frame.BackgroundTransparency = 0.05
+frame.BackgroundColor3 = THEME.Background
 frame.BorderSizePixel = 0
 frame.ClipsDescendants = false
 frame.Active = true
+frame.ZIndex = 1
 frame.Parent = screenGui
+shadow.Parent = frame
 
 local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 10)
+corner.CornerRadius = UDim.new(0, 12)
 corner.Parent = frame
 
 local stroke = Instance.new("UIStroke")
-stroke.Color = Color3.fromRGB(70, 70, 80)
+stroke.Color = THEME.Accent
 stroke.Thickness = 1
+stroke.Transparency = 0.6
 stroke.Parent = frame
+
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(26, 26, 34)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(14, 14, 18)),
+})
+gradient.Rotation = 90
+gradient.Parent = frame
 
 -- title bar (draggable)
 local titleBar = Instance.new("Frame")
 titleBar.Name = "TitleBar"
-titleBar.Size = UDim2.new(1, 0, 0, 34)
+titleBar.Size = UDim2.new(1, 0, 0, 38)
 titleBar.BackgroundTransparency = 1
 titleBar.Parent = frame
 
+local accentBar = Instance.new("Frame")
+accentBar.Size = UDim2.new(0, 4, 1, -14)
+accentBar.Position = UDim2.new(0, 8, 0, 7)
+accentBar.BackgroundColor3 = THEME.Accent
+accentBar.Parent = titleBar
+local accentCorner = Instance.new("UICorner")
+accentCorner.CornerRadius = UDim.new(1, 0)
+accentCorner.Parent = accentBar
+local accentGrad = Instance.new("UIGradient")
+accentGrad.Color = ColorSequence.new(THEME.Accent, THEME.AccentAlt)
+accentGrad.Rotation = 90
+accentGrad.Parent = accentBar
+
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -70, 1, 0)
-titleLabel.Position = UDim2.new(0, 12, 0, 0)
+titleLabel.Size = UDim2.new(1, -100, 1, 0)
+titleLabel.Position = UDim2.new(0, 20, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Aim Helper"
-titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.Text = "AIM HELPER"
+titleLabel.TextColor3 = THEME.Text
 titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextSize = 15
+titleLabel.TextSize = 14
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = titleBar
 
 local statusDot = Instance.new("Frame")
 statusDot.Size = UDim2.new(0, 8, 0, 8)
-statusDot.Position = UDim2.new(0, 92, 0.5, -4)
-statusDot.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+statusDot.Position = UDim2.new(0, 100, 0.5, -4)
+statusDot.BackgroundColor3 = THEME.Off
 statusDot.Parent = titleBar
 local dotCorner = Instance.new("UICorner")
 dotCorner.CornerRadius = UDim.new(1, 0)
 dotCorner.Parent = statusDot
+local dotGlow = Instance.new("ImageLabel")
+dotGlow.BackgroundTransparency = 1
+dotGlow.Image = "rbxassetid://6014261993"
+dotGlow.ImageColor3 = THEME.Off
+dotGlow.ImageTransparency = 0.5
+dotGlow.Size = UDim2.new(0, 24, 0, 24)
+dotGlow.Position = UDim2.new(0.5, -12, 0.5, -12)
+dotGlow.ScaleType = Enum.ScaleType.Slice
+dotGlow.SliceCenter = Rect.new(49, 49, 450, 450)
+dotGlow.ZIndex = 0
+dotGlow.Parent = statusDot
 
-local gearButton = Instance.new("TextButton")
-gearButton.Size = UDim2.new(0, 26, 0, 26)
-gearButton.Position = UDim2.new(1, -60, 0, 4)
-gearButton.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
-gearButton.Text = "⚙"
-gearButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-gearButton.Font = Enum.Font.GothamBold
-gearButton.TextSize = 15
-gearButton.Parent = titleBar
-local gearCorner = Instance.new("UICorner")
-gearCorner.CornerRadius = UDim.new(0, 6)
-gearCorner.Parent = gearButton
+local function makeIconButton(icon, xOffset)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0, 26, 0, 26)
+	btn.Position = UDim2.new(1, xOffset, 0, 6)
+	btn.BackgroundColor3 = THEME.Row
+	btn.Text = icon
+	btn.TextColor3 = THEME.Text
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 14
+	btn.AutoButtonColor = false
+	btn.Parent = titleBar
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 7)
+	c.Parent = btn
 
-local minimizeButton = Instance.new("TextButton")
-minimizeButton.Size = UDim2.new(0, 26, 0, 26)
-minimizeButton.Position = UDim2.new(1, -30, 0, 4)
-minimizeButton.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
-minimizeButton.Text = "—"
-minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-minimizeButton.Font = Enum.Font.GothamBold
-minimizeButton.TextSize = 15
-minimizeButton.Parent = titleBar
-local minCorner = Instance.new("UICorner")
-minCorner.CornerRadius = UDim.new(0, 6)
-minCorner.Parent = minimizeButton
+	btn.MouseEnter:Connect(function()
+		TweenService:Create(btn, TWEEN_FAST, {BackgroundColor3 = THEME.RowHover}):Play()
+	end)
+	btn.MouseLeave:Connect(function()
+		TweenService:Create(btn, TWEEN_FAST, {BackgroundColor3 = THEME.Row}):Play()
+	end)
 
--- body (toggle buttons)
+	return btn
+end
+
+local gearButton = makeIconButton("⚙", -64)
+local minimizeButton = makeIconButton("—", -34)
+
+-- body (toggle rows)
 local body = Instance.new("Frame")
 body.Name = "Body"
 body.Size = UDim2.new(1, -20, 0, 0)
-body.Position = UDim2.new(0, 10, 0, 38)
+body.Position = UDim2.new(0, 10, 0, 42)
 body.AutomaticSize = Enum.AutomaticSize.Y
 body.BackgroundTransparency = 1
 body.Parent = frame
@@ -139,41 +209,52 @@ listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Padding = UDim.new(0, 8)
 listLayout.Parent = body
 
+local bodyBottomPad = Instance.new("UIPadding")
+bodyBottomPad.PaddingBottom = UDim.new(0, 10)
+bodyBottomPad.Parent = body
+
 local function makeToggleRow(labelText, order)
 	local row = Instance.new("TextButton")
-	row.Size = UDim2.new(1, 0, 0, 30)
-	row.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+	row.Size = UDim2.new(1, 0, 0, 32)
+	row.BackgroundColor3 = THEME.Row
 	row.AutoButtonColor = false
 	row.Text = ""
 	row.LayoutOrder = order
 	row.Parent = body
 	local rc = Instance.new("UICorner")
-	rc.CornerRadius = UDim.new(0, 6)
+	rc.CornerRadius = UDim.new(0, 8)
 	rc.Parent = row
 
+	row.MouseEnter:Connect(function()
+		TweenService:Create(row, TWEEN_FAST, {BackgroundColor3 = THEME.RowHover}):Play()
+	end)
+	row.MouseLeave:Connect(function()
+		TweenService:Create(row, TWEEN_FAST, {BackgroundColor3 = THEME.Row}):Play()
+	end)
+
 	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(1, -50, 1, 0)
-	lbl.Position = UDim2.new(0, 10, 0, 0)
+	lbl.Size = UDim2.new(1, -56, 1, 0)
+	lbl.Position = UDim2.new(0, 12, 0, 0)
 	lbl.BackgroundTransparency = 1
 	lbl.Text = labelText
-	lbl.TextColor3 = Color3.fromRGB(230, 230, 230)
-	lbl.Font = Enum.Font.Gotham
+	lbl.TextColor3 = THEME.Text
+	lbl.Font = Enum.Font.GothamMedium
 	lbl.TextSize = 13
 	lbl.TextXAlignment = Enum.TextXAlignment.Left
 	lbl.Parent = row
 
 	local pill = Instance.new("Frame")
-	pill.Size = UDim2.new(0, 36, 0, 18)
-	pill.Position = UDim2.new(1, -46, 0.5, -9)
-	pill.BackgroundColor3 = Color3.fromRGB(70, 70, 78)
+	pill.Size = UDim2.new(0, 38, 0, 20)
+	pill.Position = UDim2.new(1, -48, 0.5, -10)
+	pill.BackgroundColor3 = Color3.fromRGB(60, 60, 68)
 	pill.Parent = row
 	local pillCorner = Instance.new("UICorner")
 	pillCorner.CornerRadius = UDim.new(1, 0)
 	pillCorner.Parent = pill
 
 	local knob = Instance.new("Frame")
-	knob.Size = UDim2.new(0, 14, 0, 14)
-	knob.Position = UDim2.new(0, 2, 0.5, -7)
+	knob.Size = UDim2.new(0, 16, 0, 16)
+	knob.Position = UDim2.new(0, 2, 0.5, -8)
 	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	knob.Parent = pill
 	local knobCorner = Instance.new("UICorner")
@@ -183,39 +264,55 @@ local function makeToggleRow(labelText, order)
 	return row, pill, knob
 end
 
-local aimRow, aimPill, aimKnob = makeToggleRow("Aim Helper  (F)", 1)
+local aimRow, aimPill, aimKnob = makeToggleRow("Aim Helper   (F)", 1)
 local teamRow, teamPill, teamKnob = makeToggleRow("Team Check", 2)
-local aimingRow, aimingPill, aimingKnob = makeToggleRow("Only While Aiming (RMB)", 3)
+local aimingRow, aimingPill, aimingKnob = makeToggleRow("Only While Aiming", 3)
 
-local function setPillState(pill, knob, on)
-	if on then
-		pill.BackgroundColor3 = Color3.fromRGB(50, 170, 90)
-		knob.Position = UDim2.new(1, -16, 0.5, -7)
+local function setPillState(pill, knob, on, animated)
+	local pillGoal = {BackgroundColor3 = on and THEME.On or Color3.fromRGB(60, 60, 68)}
+	local knobGoal = {Position = on and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)}
+	if animated then
+		TweenService:Create(pill, TWEEN_SPRING, pillGoal):Play()
+		TweenService:Create(knob, TWEEN_SPRING, knobGoal):Play()
 	else
-		pill.BackgroundColor3 = Color3.fromRGB(70, 70, 78)
-		knob.Position = UDim2.new(0, 2, 0.5, -7)
+		pill.BackgroundColor3 = pillGoal.BackgroundColor3
+		knob.Position = knobGoal.Position
 	end
 end
 
--- ===== SETTINGS PANEL =====
+-- ===== SETTINGS PANEL (animated expand/collapse) =====
+local settingsClip = Instance.new("Frame")
+settingsClip.Name = "SettingsClip"
+settingsClip.Size = UDim2.new(1, 0, 0, 0)
+settingsClip.BackgroundTransparency = 1
+settingsClip.ClipsDescendants = true
+settingsClip.LayoutOrder = 4
+settingsClip.Parent = body
+
 local settingsPanel = Instance.new("Frame")
 settingsPanel.Name = "SettingsPanel"
 settingsPanel.Size = UDim2.new(1, 0, 0, 0)
 settingsPanel.AutomaticSize = Enum.AutomaticSize.Y
-settingsPanel.BackgroundTransparency = 1
-settingsPanel.Visible = false
-settingsPanel.LayoutOrder = 4
-settingsPanel.Parent = body
+settingsPanel.BackgroundColor3 = THEME.Panel
+settingsPanel.Parent = settingsClip
+
+local spCorner = Instance.new("UICorner")
+spCorner.CornerRadius = UDim.new(0, 8)
+spCorner.Parent = settingsPanel
 
 local settingsLayout = Instance.new("UIListLayout")
 settingsLayout.SortOrder = Enum.SortOrder.LayoutOrder
-settingsLayout.Padding = UDim.new(0, 10)
+settingsLayout.Padding = UDim.new(0, 12)
 settingsLayout.Parent = settingsPanel
 
 local settingsPad = Instance.new("UIPadding")
-settingsPad.PaddingTop = UDim.new(0, 4)
-settingsPad.PaddingBottom = UDim.new(0, 4)
+settingsPad.PaddingTop = UDim.new(0, 12)
+settingsPad.PaddingBottom = UDim.new(0, 12)
+settingsPad.PaddingLeft = UDim.new(0, 12)
+settingsPad.PaddingRight = UDim.new(0, 12)
 settingsPad.Parent = settingsPanel
+
+local settingsPanelHeight = 0 -- computed after sliders are built
 
 local function createSlider(name, order, key)
 	local range = SLIDER_RANGES[key]
@@ -230,7 +327,7 @@ local function createSlider(name, order, key)
 	sliderLabel.Size = UDim2.new(1, 0, 0, 14)
 	sliderLabel.BackgroundTransparency = 1
 	sliderLabel.Text = name .. ": " .. tostring(settings[key])
-	sliderLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+	sliderLabel.TextColor3 = THEME.SubText
 	sliderLabel.Font = Enum.Font.Gotham
 	sliderLabel.TextSize = 12
 	sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -239,7 +336,7 @@ local function createSlider(name, order, key)
 	local track = Instance.new("Frame")
 	track.Size = UDim2.new(1, 0, 0, 6)
 	track.Position = UDim2.new(0, 0, 0, 20)
-	track.BackgroundColor3 = Color3.fromRGB(55, 55, 62)
+	track.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
 	track.Parent = container
 	local trackCorner = Instance.new("UICorner")
 	trackCorner.CornerRadius = UDim.new(1, 0)
@@ -249,11 +346,14 @@ local function createSlider(name, order, key)
 
 	local fill = Instance.new("Frame")
 	fill.Size = UDim2.new(fraction, 0, 1, 0)
-	fill.BackgroundColor3 = Color3.fromRGB(90, 160, 230)
+	fill.BackgroundColor3 = THEME.Accent
 	fill.Parent = track
 	local fillCorner = Instance.new("UICorner")
 	fillCorner.CornerRadius = UDim.new(1, 0)
 	fillCorner.Parent = fill
+	local fillGrad = Instance.new("UIGradient")
+	fillGrad.Color = ColorSequence.new(THEME.Accent, THEME.AccentAlt)
+	fillGrad.Parent = fill
 
 	local knob = Instance.new("TextButton")
 	knob.Size = UDim2.new(0, 14, 0, 14)
@@ -261,6 +361,7 @@ local function createSlider(name, order, key)
 	knob.Position = UDim2.new(fraction, 0, 0.5, 0)
 	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	knob.Text = ""
+	knob.ZIndex = 2
 	knob.Parent = track
 	local knobCorner = Instance.new("UICorner")
 	knobCorner.CornerRadius = UDim.new(1, 0)
@@ -289,6 +390,7 @@ local function createSlider(name, order, key)
 	knob.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
+			TweenService:Create(knob, TWEEN_FAST, {Size = UDim2.new(0, 18, 0, 18)}):Play()
 		end
 	end)
 
@@ -299,8 +401,9 @@ local function createSlider(name, order, key)
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
 			dragging = false
+			TweenService:Create(knob, TWEEN_FAST, {Size = UDim2.new(0, 14, 0, 14)}):Play()
 		end
 	end)
 
@@ -326,9 +429,9 @@ fovCircle.Visible = false
 fovCircle.Parent = screenGui
 
 local fovStroke = Instance.new("UIStroke")
-fovStroke.Color = Color3.fromRGB(90, 200, 255)
+fovStroke.Color = THEME.Accent
 fovStroke.Thickness = 1.5
-fovStroke.Transparency = 0.3
+fovStroke.Transparency = 0.35
 fovStroke.Parent = fovCircle
 
 local fovCorner = Instance.new("UICorner")
@@ -337,7 +440,6 @@ fovCorner.Parent = fovCircle
 
 local function updateFOVCircle()
 	local screenCenter = camera.ViewportSize / 2
-	-- approximate on-screen radius from the cone angle and current FOV
 	local vFOV = math.rad(camera.FieldOfView)
 	local screenHeight = camera.ViewportSize.Y
 	local pixelsPerRadian = screenHeight / vFOV
@@ -348,11 +450,16 @@ local function updateFOVCircle()
 end
 
 -- ===== TOGGLE LOGIC =====
-local function refreshVisuals()
-	setPillState(aimPill, aimKnob, aimHelperEnabled)
-	setPillState(teamPill, teamKnob, teamCheckEnabled)
-	setPillState(aimingPill, aimingKnob, onlyWhileAiming)
-	statusDot.BackgroundColor3 = aimHelperEnabled and Color3.fromRGB(50, 170, 90) or Color3.fromRGB(180, 40, 40)
+local function refreshVisuals(animated)
+	if animated == nil then animated = true end
+	setPillState(aimPill, aimKnob, aimHelperEnabled, animated)
+	setPillState(teamPill, teamKnob, teamCheckEnabled, animated)
+	setPillState(aimingPill, aimingKnob, onlyWhileAiming, animated)
+
+	local dotColor = aimHelperEnabled and THEME.On or THEME.Off
+	TweenService:Create(statusDot, TWEEN_MED, {BackgroundColor3 = dotColor}):Play()
+	TweenService:Create(dotGlow, TWEEN_MED, {ImageColor3 = dotColor}):Play()
+
 	fovCircle.Visible = aimHelperEnabled
 end
 
@@ -371,14 +478,50 @@ aimingRow.MouseButton1Click:Connect(function()
 	refreshVisuals()
 end)
 
+-- Deterministic sizing: measure content heights once layout has settled,
+-- then drive frame height explicitly instead of relying on signals firing
+-- mid-tween (which can be unreliable).
+local TITLE_HEIGHT = 42
+local ROW_GAP = 8
+local baseBodyHeight = 0    -- height of the 3 toggle rows (settings collapsed)
+local panelHeight = 0        -- height of the settings panel content
+
+local settingsOpen = false
+local minimized = false
+
+local function currentTargetHeight()
+	if minimized then
+		return TITLE_HEIGHT
+	elseif settingsOpen then
+		return TITLE_HEIGHT + baseBodyHeight + ROW_GAP + panelHeight
+	else
+		return TITLE_HEIGHT + baseBodyHeight
+	end
+end
+
 gearButton.MouseButton1Click:Connect(function()
-	settingsPanel.Visible = not settingsPanel.Visible
+	settingsOpen = not settingsOpen
+	if settingsOpen then
+		TweenService:Create(settingsClip, TWEEN_MED, {Size = UDim2.new(1, 0, 0, panelHeight)}):Play()
+		TweenService:Create(gearButton, TWEEN_MED, {Rotation = 90}):Play()
+	else
+		TweenService:Create(settingsClip, TWEEN_MED, {Size = UDim2.new(1, 0, 0, 0)}):Play()
+		TweenService:Create(gearButton, TWEEN_MED, {Rotation = 0}):Play()
+	end
+	TweenService:Create(frame, TWEEN_MED, {Size = UDim2.new(0, 250, 0, currentTargetHeight())}):Play()
 end)
 
-local minimized = false
 minimizeButton.MouseButton1Click:Connect(function()
 	minimized = not minimized
-	body.Visible = not minimized
+	if minimized then
+		TweenService:Create(frame, TWEEN_MED, {Size = UDim2.new(0, 250, 0, currentTargetHeight())}):Play()
+		task.delay(0.25, function()
+			if minimized then body.Visible = false end
+		end)
+	else
+		body.Visible = true
+		TweenService:Create(frame, TWEEN_MED, {Size = UDim2.new(0, 250, 0, currentTargetHeight())}):Play()
+	end
 	minimizeButton.Text = minimized and "+" or "—"
 end)
 
@@ -399,7 +542,25 @@ UserInputService.InputEnded:Connect(function(input)
 	end
 end)
 
-refreshVisuals()
+refreshVisuals(false)
+
+-- entrance animation: measure real content heights once layout has settled,
+-- then animate the frame in from zero height.
+frame.Size = UDim2.new(0, 250, 0, 0)
+frame.BackgroundTransparency = 1
+stroke.Transparency = 1
+settingsClip.Size = UDim2.new(1, 0, 0, 0) -- settings starts collapsed
+
+task.defer(function()
+	panelHeight = settingsPanel.AbsoluteSize.Y
+	baseBodyHeight = (32 * 3) + (ROW_GAP * 2) -- 3 toggle rows + gaps between them
+
+	TweenService:Create(frame, TWEEN_SPRING, {
+		Size = UDim2.new(0, 250, 0, currentTargetHeight()),
+		BackgroundTransparency = 0,
+	}):Play()
+	TweenService:Create(stroke, TWEEN_MED, {Transparency = 0.6}):Play()
+end)
 
 -- ===== DRAGGING THE WINDOW =====
 do
