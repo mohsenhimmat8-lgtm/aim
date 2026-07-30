@@ -147,6 +147,27 @@ titleLabel.TextSize = 14
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Parent = titleBar
 
+local titleGrad = Instance.new("UIGradient")
+titleGrad.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), THEME.Accent)
+titleGrad.Parent = titleLabel
+
+-- slowly cycling border glow for a premium feel
+local borderGlow = Instance.new("UIGradient")
+borderGlow.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, THEME.Accent),
+	ColorSequenceKeypoint.new(0.5, THEME.AccentAlt),
+	ColorSequenceKeypoint.new(1, THEME.Accent),
+})
+borderGlow.Parent = stroke
+
+task.spawn(function()
+	while frame.Parent do
+		TweenService:Create(borderGlow, TweenInfo.new(3, Enum.EasingStyle.Linear), {Rotation = 360}):Play()
+		task.wait(3)
+		borderGlow.Rotation = 0
+	end
+end)
+
 local statusDot = Instance.new("Frame")
 statusDot.Size = UDim2.new(0, 8, 0, 8)
 statusDot.Position = UDim2.new(0, 100, 0.5, -4)
@@ -419,7 +440,7 @@ createSlider("Cone Angle (deg)", 2, "ConeAngle")
 createSlider("Strength", 3, "Strength")
 createSlider("Smoothness", 4, "Smoothness")
 
--- ===== ON-SCREEN FOV CIRCLE =====
+-- ===== ON-SCREEN FOV CIRCLE + LOCK-ON RETICLE =====
 local fovCircle = Instance.new("Frame")
 fovCircle.Name = "FOVCircle"
 fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -438,6 +459,42 @@ local fovCorner = Instance.new("UICorner")
 fovCorner.CornerRadius = UDim.new(1, 0)
 fovCorner.Parent = fovCircle
 
+-- Lock-on reticle: a small ring + "LOCKED" tag that appears at the current
+-- target's screen position. Only shown when there is an actual unobstructed
+-- line of sight to the target (raycast-checked) — it reflects what you can
+-- already see, not what's behind walls.
+local reticle = Instance.new("Frame")
+reticle.Name = "LockReticle"
+reticle.AnchorPoint = Vector2.new(0.5, 0.5)
+reticle.Size = UDim2.new(0, 34, 0, 34)
+reticle.BackgroundTransparency = 1
+reticle.Visible = false
+reticle.ZIndex = 5
+reticle.Parent = screenGui
+
+local reticleStroke = Instance.new("UIStroke")
+reticleStroke.Color = THEME.On
+reticleStroke.Thickness = 2
+reticleStroke.Parent = reticle
+
+local reticleCorner = Instance.new("UICorner")
+reticleCorner.CornerRadius = UDim.new(1, 0)
+reticleCorner.Parent = reticle
+
+local reticleTag = Instance.new("TextLabel")
+reticleTag.AnchorPoint = Vector2.new(0.5, 0)
+reticleTag.Position = UDim2.new(0.5, 0, 1, 6)
+reticleTag.Size = UDim2.new(0, 60, 0, 14)
+reticleTag.BackgroundTransparency = 1
+reticleTag.Text = "LOCKED"
+reticleTag.TextColor3 = THEME.On
+reticleTag.Font = Enum.Font.GothamBold
+reticleTag.TextSize = 10
+reticleTag.ZIndex = 5
+reticleTag.Parent = reticle
+
+local isCurrentlyLocked = false
+
 local function updateFOVCircle()
 	local screenCenter = camera.ViewportSize / 2
 	local vFOV = math.rad(camera.FieldOfView)
@@ -447,6 +504,70 @@ local function updateFOVCircle()
 
 	fovCircle.Position = UDim2.new(0, screenCenter.X, 0, screenCenter.Y)
 	fovCircle.Size = UDim2.new(0, pixelRadius * 2, 0, pixelRadius * 2)
+end
+
+-- Sets the FOV circle + reticle to reflect whether we're actively locked on.
+-- locked=true also triggers a quick pop animation the first time a lock is acquired.
+local function setLockState(locked)
+	if locked == isCurrentlyLocked then return end
+	isCurrentlyLocked = locked
+
+	local ringColor = locked and THEME.On or THEME.Accent
+	TweenService:Create(fovStroke, TWEEN_MED, {Color = ringColor}):Play()
+
+	if locked then
+		TweenService:Create(fovStroke, TWEEN_FAST, {Thickness = 3}):Play()
+		task.delay(0.15, function()
+			TweenService:Create(fovStroke, TWEEN_MED, {Thickness = 1.5}):Play()
+		end)
+	end
+
+	reticle.Visible = locked
+	if locked then
+		reticle.Size = UDim2.new(0, 50, 0, 50)
+		TweenService:Create(reticle, TWEEN_SPRING, {Size = UDim2.new(0, 34, 0, 34)}):Play()
+	end
+end
+
+-- Raycasts from the camera to the target's actual world position to confirm
+-- there's really nothing blocking your view before showing the reticle.
+local losRayParams = RaycastParams.new()
+losRayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function hasLineOfSight(targetPart)
+	if not targetPart then return false end
+	local character = player.Character
+	losRayParams.FilterDescendantsInstances = {character, targetPart.Parent}
+
+	local origin = camera.CFrame.Position
+	local direction = targetPart.Position - origin
+	local result = Workspace:Raycast(origin, direction, losRayParams)
+
+	-- if the ray hits nothing before reaching the target, sight is clear
+	return result == nil
+end
+
+-- Projects the target's world position to a screen position and updates the
+-- reticle there, hiding it if the target is off-screen or behind something.
+local function updateReticle(targetPart)
+	if not targetPart or not aimHelperEnabled then
+		setLockState(false)
+		return
+	end
+
+	if not hasLineOfSight(targetPart) then
+		setLockState(false)
+		return
+	end
+
+	local screenPoint, onScreen = camera:WorldToViewportPoint(targetPart.Position)
+	if not onScreen then
+		setLockState(false)
+		return
+	end
+
+	setLockState(true)
+	reticle.Position = UDim2.new(0, screenPoint.X, 0, screenPoint.Y)
 end
 
 -- ===== TOGGLE LOGIC =====
@@ -461,6 +582,9 @@ local function refreshVisuals(animated)
 	TweenService:Create(dotGlow, TWEEN_MED, {ImageColor3 = dotColor}):Play()
 
 	fovCircle.Visible = aimHelperEnabled
+	if not aimHelperEnabled then
+		setLockState(false)
+	end
 end
 
 aimRow.MouseButton1Click:Connect(function()
@@ -718,7 +842,10 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 
 	if not aimHelperEnabled then return end
-	if onlyWhileAiming and not isAimingHeld then return end
+	if onlyWhileAiming and not isAimingHeld then
+		setLockState(false)
+		return
+	end
 
 	local camCFrame = camera.CFrame
 	local camPos = camCFrame.Position
@@ -744,8 +871,11 @@ RunService.RenderStepped:Connect(function(dt)
 	local target = cachedTarget
 	if not target or not target.Parent then
 		currentSmoothLook = nil
+		setLockState(false)
 		return
 	end
+
+	updateReticle(target)
 
 	local toTarget = (target.Position - camPos).Unit
 
