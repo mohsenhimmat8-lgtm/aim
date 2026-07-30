@@ -57,11 +57,13 @@ local SLIDER_RANGES = {
 }
 
 local TOGGLE_KEY = Enum.KeyCode.F
+local DOUBLE_JUMP_TOGGLE_KEY = Enum.KeyCode.G
 
 -- ===== STATE =====
 local aimHelperEnabled = false
 local teamCheckEnabled = true
 local onlyWhileAiming = false
+local doubleJumpEnabled = false
 local isAimingHeld = false
 local currentSmoothLook = nil
 
@@ -288,6 +290,7 @@ end
 local aimRow, aimPill, aimKnob = makeToggleRow("Aim Helper   (F)", 1)
 local teamRow, teamPill, teamKnob = makeToggleRow("Team Check", 2)
 local aimingRow, aimingPill, aimingKnob = makeToggleRow("Only While Aiming", 3)
+local doubleJumpRow, doubleJumpPill, doubleJumpKnob = makeToggleRow("Double Jump   (G)", 4)
 
 local function setPillState(pill, knob, on, animated)
 	local pillGoal = {BackgroundColor3 = on and THEME.On or Color3.fromRGB(60, 60, 68)}
@@ -576,6 +579,7 @@ local function refreshVisuals(animated)
 	setPillState(aimPill, aimKnob, aimHelperEnabled, animated)
 	setPillState(teamPill, teamKnob, teamCheckEnabled, animated)
 	setPillState(aimingPill, aimingKnob, onlyWhileAiming, animated)
+	setPillState(doubleJumpPill, doubleJumpKnob, doubleJumpEnabled, animated)
 
 	local dotColor = aimHelperEnabled and THEME.On or THEME.Off
 	TweenService:Create(statusDot, TWEEN_MED, {BackgroundColor3 = dotColor}):Play()
@@ -602,12 +606,17 @@ aimingRow.MouseButton1Click:Connect(function()
 	refreshVisuals()
 end)
 
+doubleJumpRow.MouseButton1Click:Connect(function()
+	doubleJumpEnabled = not doubleJumpEnabled
+	refreshVisuals()
+end)
+
 -- Deterministic sizing: measure content heights once layout has settled,
 -- then drive frame height explicitly instead of relying on signals firing
 -- mid-tween (which can be unreliable).
 local TITLE_HEIGHT = 42
 local ROW_GAP = 8
-local baseBodyHeight = 0    -- height of the 3 toggle rows (settings collapsed)
+local baseBodyHeight = 0    -- height of the 4 toggle rows (settings collapsed)
 local panelHeight = 0        -- height of the settings panel content
 
 local settingsOpen = false
@@ -655,6 +664,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		aimHelperEnabled = not aimHelperEnabled
 		refreshVisuals()
 	end
+	if input.KeyCode == DOUBLE_JUMP_TOGGLE_KEY then
+		doubleJumpEnabled = not doubleJumpEnabled
+		refreshVisuals()
+	end
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		isAimingHeld = true
 	end
@@ -677,7 +690,7 @@ settingsClip.Size = UDim2.new(1, 0, 0, 0) -- settings starts collapsed
 
 task.defer(function()
 	panelHeight = settingsPanel.AbsoluteSize.Y
-	baseBodyHeight = (32 * 3) + (ROW_GAP * 2) -- 3 toggle rows + gaps between them
+	baseBodyHeight = (32 * 4) + (ROW_GAP * 3) -- 4 toggle rows + gaps between them
 
 	TweenService:Create(frame, TWEEN_SPRING, {
 		Size = UDim2.new(0, 250, 0, currentTargetHeight()),
@@ -888,4 +901,54 @@ RunService.RenderStepped:Connect(function(dt)
 	currentSmoothLook = newLook
 
 	camera.CFrame = CFrame.new(camPos, camPos + newLook)
+end)
+
+-- ===== DOUBLE JUMP =====
+local DOUBLE_JUMP_POWER = 50 -- vertical velocity applied on the second jump; tune to taste
+
+local jumpsUsed = 0
+local currentHumanoid = nil
+local currentRoot = nil
+local landedConnection = nil
+local stateConnection = nil
+
+local function onCharacterAdded(character)
+	currentRoot = character:WaitForChild("HumanoidRootPart")
+	currentHumanoid = character:WaitForChild("Humanoid")
+	jumpsUsed = 0
+
+	if landedConnection then landedConnection:Disconnect() end
+	if stateConnection then stateConnection:Disconnect() end
+
+	-- reset available jumps whenever the character lands or starts running/idle on ground
+	stateConnection = currentHumanoid.StateChanged:Connect(function(_, newState)
+		if newState == Enum.HumanoidStateType.Landed
+			or newState == Enum.HumanoidStateType.Running then
+			jumpsUsed = 0
+		end
+	end)
+end
+
+player.CharacterAdded:Connect(onCharacterAdded)
+if player.Character then
+	onCharacterAdded(player.Character)
+end
+
+-- JumpRequest fires whenever the player presses the jump input (spacebar,
+-- gamepad A, mobile jump button) — including while already airborne, which
+-- a normal single jump ignores. We use that to grant a second jump.
+UserInputService.JumpRequest:Connect(function()
+	if not doubleJumpEnabled then return end
+	if not currentHumanoid or not currentRoot then return end
+
+	local state = currentHumanoid:GetState()
+	local isAirborne = state == Enum.HumanoidStateType.Freefall
+		or state == Enum.HumanoidStateType.Jumping
+
+	if isAirborne and jumpsUsed < 1 then
+		jumpsUsed += 1
+		local velocity = currentRoot.AssemblyLinearVelocity
+		currentRoot.AssemblyLinearVelocity = Vector3.new(velocity.X, DOUBLE_JUMP_POWER, velocity.Z)
+		currentHumanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
 end)
